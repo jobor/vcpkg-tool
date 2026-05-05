@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. ohos-2026-05-05). Leave blank to refresh the rolling 'ohos-latest' pre-release."
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark named release as pre-release"
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches:
+      - ohos-release
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            asset: vcpkg-windows-x64.exe
+            binary: out/build/Win-x64-Release/vcpkg.exe
+          - os: ubuntu-24.04
+            asset: vcpkg-linux-x64
+            binary: out/build/release/vcpkg
+          - os: ubuntu-24.04-arm
+            asset: vcpkg-linux-arm64
+            binary: out/build/release/vcpkg
+          - os: macos-26
+            asset: vcpkg-macos
+            binary: out/build/release/vcpkg
+            cmake_extra: '"-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64"'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja (Linux)
+        if: startsWith(matrix.os, 'ubuntu-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: startsWith(matrix.os, 'macos-')
+        run: brew install ninja
+
+      - name: Configure and Build (Unix)
+        if: matrix.os != 'windows-2025'
+        run: |
+          cmake -S . -B out/build/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DVCPKG_BUILD_BENCHMARKING=OFF \
+            -DVCPKG_BUILD_FUZZING=OFF \
+            ${{ matrix.cmake_extra }}
+          cmake --build out/build/release --target vcpkg -- -k0
+
+      - name: Configure and Build (Windows)
+        if: matrix.os == 'windows-2025'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
+          IF %ERRORLEVEL% NEQ 0 exit /B %ERRORLEVEL%
+          set CXX=cl
+          set CC=cl
+          if "%VCPKG_ROOT%"=="" set VCPKG_ROOT=%VCPKG_INSTALLATION_ROOT%
+          cmake --preset Win-x64-Release ^
+            -DVCPKG_BUILD_BENCHMARKING=OFF ^
+            -DVCPKG_BUILD_FUZZING=OFF
+          IF %ERRORLEVEL% NEQ 0 exit /B %ERRORLEVEL%
+          cmake --build out\build\Win-x64-Release --target vcpkg -- -k0
+
+      - name: Strip binary (Unix)
+        if: matrix.os != 'windows-2025'
+        run: strip "${{ matrix.binary }}"
+
+      - name: Stage release asset
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp "${{ matrix.binary }}" "staging/${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: staging/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staging
+          merge-multiple: true
+
+      - name: Compute checksums
+        working-directory: staging
+        run: sha256sum * > SHA256SUMS
+
+      - name: Determine release metadata
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            echo "name=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            if [ "$INPUT_PRERELEASE" = "true" ]; then
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "tag=ohos-latest" >> "$GITHUB_OUTPUT"
+            echo "name=ohos rolling build" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          NAME: ${{ steps.meta.outputs.name }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          SHORT: ${{ steps.meta.outputs.short }}
+          BUILT_AT: ${{ steps.meta.outputs.built_at }}
+        run: |
+          set -euo pipefail
+          NOTES="Built from ${GITHUB_SHA} (\`${SHORT}\`) at ${BUILT_AT}.
+
+          Verify downloads with the SHA256SUMS file."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+
+          PRERELEASE_FLAG=""
+          if [ "$PRERELEASE" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "$TAG" \
+            --title "$NAME" \
+            --notes "$NOTES" \
+            --target "$GITHUB_SHA" \
+            $PRERELEASE_FLAG \
+            staging/*
