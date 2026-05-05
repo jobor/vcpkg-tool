@@ -31,7 +31,14 @@ jobs:
         include:
           - os: windows-2025
             asset: vcpkg-windows-x64.exe
-            binary: out/build/Win-x64-Release/vcpkg.exe
+            binary: out/build/release/vcpkg.exe
+            vs_arch: amd64
+            triplet: x64-windows-static
+          - os: windows-2025
+            asset: vcpkg-windows-arm64.exe
+            binary: out/build/release/vcpkg.exe
+            vs_arch: arm64
+            triplet: arm64-windows-static
           - os: ubuntu-24.04
             asset: vcpkg-linux-x64
             binary: out/build/release/vcpkg
@@ -71,16 +78,21 @@ jobs:
         if: matrix.os == 'windows-2025'
         shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=${{ matrix.vs_arch }} -host_arch=amd64
           IF %ERRORLEVEL% NEQ 0 exit /B %ERRORLEVEL%
           set CXX=cl
           set CC=cl
           if "%VCPKG_ROOT%"=="" set VCPKG_ROOT=%VCPKG_INSTALLATION_ROOT%
-          cmake --preset Win-x64-Release ^
+          "%VCPKG_ROOT%\vcpkg.exe" install curl:${{ matrix.triplet }}
+          IF %ERRORLEVEL% NEQ 0 exit /B %ERRORLEVEL%
+          cmake -S . -B out\build\release -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} ^
             -DVCPKG_BUILD_BENCHMARKING=OFF ^
             -DVCPKG_BUILD_FUZZING=OFF
           IF %ERRORLEVEL% NEQ 0 exit /B %ERRORLEVEL%
-          cmake --build out\build\Win-x64-Release --target vcpkg -- -k0
+          cmake --build out\build\release --target vcpkg -- -k0
 
       - name: Strip binary (Unix)
         if: matrix.os != 'windows-2025'
