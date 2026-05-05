@@ -83,8 +83,6 @@ jobs:
           set CXX=cl
           set CC=cl
           if "%VCPKG_ROOT%"=="" set VCPKG_ROOT=%VCPKG_INSTALLATION_ROOT%
-          "%VCPKG_ROOT%\vcpkg.exe" install curl:${{ matrix.triplet }}
-          IF %ERRORLEVEL% NEQ 0 exit /B %ERRORLEVEL%
           cmake -S . -B out\build\release -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
