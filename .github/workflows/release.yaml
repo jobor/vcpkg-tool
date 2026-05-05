@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. ohos-2026-05-05). Leave blank to refresh the rolling 'ohos-latest' pre-release."
+        description: "Release tag override. Leave blank to auto-generate ohos-YYYYMMDD-<short-sha>."
         required: false
         default: ""
       prerelease:
-        description: "Mark named release as pre-release"
+        description: "Mark release as pre-release"
         type: boolean
         required: false
-        default: false
+        default: true
   push:
     branches:
       - ohos-release
@@ -131,21 +131,25 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
+          SHORT=$(git rev-parse --short HEAD)
+          DATE=$(date -u +%Y%m%d)
           if [ -n "$INPUT_TAG" ]; then
-            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
-            echo "name=$INPUT_TAG" >> "$GITHUB_OUTPUT"
-            if [ "$INPUT_PRERELEASE" = "true" ]; then
-              echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            fi
+            TAG="$INPUT_TAG"
           else
-            echo "tag=ohos-latest" >> "$GITHUB_OUTPUT"
-            echo "name=ohos rolling build" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            TAG="ohos-${DATE}-${SHORT}"
           fi
-          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          if [ "$INPUT_PRERELEASE" = "false" ]; then
+            PRERELEASE=false
+          else
+            PRERELEASE=true
+          fi
+          {
+            echo "tag=$TAG"
+            echo "name=$TAG"
+            echo "short=$SHORT"
+            echo "prerelease=$PRERELEASE"
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish release
         env:
@@ -157,13 +161,14 @@ jobs:
           BUILT_AT: ${{ steps.meta.outputs.built_at }}
         run: |
           set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping publish to keep tags immutable."
+            exit 0
+          fi
+
           NOTES="Built from ${GITHUB_SHA} (\`${SHORT}\`) at ${BUILT_AT}.
 
           Verify downloads with the SHA256SUMS file."
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete "$TAG" --yes --cleanup-tag
-          fi
 
           PRERELEASE_FLAG=""
           if [ "$PRERELEASE" = "true" ]; then
