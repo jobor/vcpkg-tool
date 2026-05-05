@@ -11,7 +11,7 @@ on:
         description: "Mark release as pre-release"
         type: boolean
         required: false
-        default: true
+        default: false
   push:
     branches:
       - ohos-release
@@ -138,10 +138,10 @@ jobs:
           else
             TAG="ohos-${DATE}-${SHORT}"
           fi
-          if [ "$INPUT_PRERELEASE" = "false" ]; then
-            PRERELEASE=false
-          else
+          if [ "$INPUT_PRERELEASE" = "true" ]; then
             PRERELEASE=true
+          else
+            PRERELEASE=false
           fi
           {
             echo "tag=$TAG"
